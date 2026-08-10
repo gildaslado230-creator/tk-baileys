@@ -23,6 +23,7 @@ const {
   Browsers,
   fetchLatestBaileysVersion,
 } = require("baileys");
+const { usePostgresAuthState } = require("./auth-postgres");
 
 const PORT = process.env.PORT || 3001;
 const API_TOKEN = process.env.API_TOKEN || "change-me-in-railway";
@@ -42,8 +43,17 @@ function toJid(phone) {
 }
 
 async function startSock() {
-  if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  // Session en base si DATABASE_URL est fourni (indispensable sur Render :
+  // le disque y est effacé à chaque redémarrage). Sinon, dossier local.
+  let state, saveCreds;
+  if (process.env.DATABASE_URL) {
+    ({ state, saveCreds } = await usePostgresAuthState(process.env.DATABASE_URL));
+    console.log("[auth] session WhatsApp stockée en base PostgreSQL");
+  } else {
+    if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
+    ({ state, saveCreds } = await useMultiFileAuthState(AUTH_DIR));
+    console.log(`[auth] session WhatsApp stockée dans ${AUTH_DIR}`);
+  }
   const { version } = await fetchLatestBaileysVersion();
 
   sock = makeWASocket({
@@ -211,4 +221,19 @@ app.listen(PORT, () => {
     console.error("Fatal: failed to start WhatsApp socket:", e);
     process.exit(1);
   });
+
+  // Anti-mise en veille : l'offre gratuite de Render endort un service resté
+  // 15 min sans requête, et le réveil prend ~50 s — le premier message d'un
+  // colis partirait donc en retard, voire échouerait. Un appel régulier sur
+  // sa propre adresse maintient le service éveillé.
+  const publicUrl = process.env.RENDER_EXTERNAL_URL;
+  if (publicUrl) {
+    setInterval(
+      () => {
+        fetch(`${publicUrl.replace(/\/$/, "")}/health`).catch(() => {});
+      },
+      10 * 60 * 1000,
+    );
+    console.log(`[keepalive] auto-appel de ${publicUrl}/health toutes les 10 min`);
+  }
 });
