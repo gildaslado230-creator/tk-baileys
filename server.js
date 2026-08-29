@@ -45,13 +45,16 @@ function toJid(phone) {
 async function startSock() {
   // Session en base si DATABASE_URL est fourni (indispensable sur Render :
   // le disque y est effacé à chaque redémarrage). Sinon, dossier local.
-  let state, saveCreds;
+  let state, saveCreds, clearAuth;
   if (process.env.DATABASE_URL) {
-    ({ state, saveCreds } = await usePostgresAuthState(process.env.DATABASE_URL));
+    ({ state, saveCreds, clearAuth } = await usePostgresAuthState(
+      process.env.DATABASE_URL,
+    ));
     console.log("[auth] session WhatsApp stockée en base PostgreSQL");
   } else {
     if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
     ({ state, saveCreds } = await useMultiFileAuthState(AUTH_DIR));
+    clearAuth = async () => fs.rmSync(AUTH_DIR, { recursive: true, force: true });
     console.log(`[auth] session WhatsApp stockée dans ${AUTH_DIR}`);
   }
   const { version } = await fetchLatestBaileysVersion();
@@ -93,9 +96,19 @@ async function startSock() {
         console.log("[baileys] Reconnecting in 3s...");
         setTimeout(() => startSock().catch((e) => console.error(e)), 3000);
       } else {
-        console.error(
-          "[baileys] Logged out. Delete ./auth_state and restart to scan again.",
-        );
+        // WhatsApp a invalidé la session (téléphone hors ligne trop longtemps,
+        // appareil délié…). On efface la session périmée et on relance : un
+        // nouveau QR est alors proposé sur /qr, au lieu de rester bloqué sans
+        // aucun moyen de se reconnecter.
+        console.error("[baileys] Session invalidée — nettoyage et nouveau QR.");
+        setTimeout(async () => {
+          try {
+            if (clearAuth) await clearAuth();
+          } catch (e) {
+            console.error("[baileys] clearAuth a échoué:", e);
+          }
+          startSock().catch((e) => console.error(e));
+        }, 2000);
       }
     } else if (connection === "open") {
       connectionState = "connected";
