@@ -91,6 +91,8 @@ async function startSock() {
       const reason = DisconnectReason[code] || code;
       console.warn(`[baileys] Connection closed. Reason: ${reason}`);
       connectionState = "disconnected";
+      // Le code de jumelage est lié à CE socket : il meurt avec lui.
+      pairCache = null;
       const shouldReconnect = code !== DisconnectReason.loggedOut;
       if (shouldReconnect) {
         console.log("[baileys] Reconnecting in 3s...");
@@ -163,7 +165,8 @@ app.get("/pair", async (req, res) => {
   }
   const phone = String(req.query.phone || DEFAULT_PAIR_PHONE).replace(/[^\d]/g, "");
   try {
-    if (!pairCache || pairCache.phone !== phone || Date.now() - pairCache.at > 120000) {
+    const forceNew = "new" in req.query;
+    if (forceNew || !pairCache || pairCache.phone !== phone || Date.now() - pairCache.at > 60000) {
       const raw = await sock.requestPairingCode(phone);
       pairCache = { phone, code: raw, at: Date.now() };
     }
@@ -176,7 +179,8 @@ app.get("/pair", async (req, res) => {
       <p>1. WhatsApp → Paramètres → Appareils connectés → Connecter un appareil<br/>
          2. Touchez « Connecter avec le numéro de téléphone » (en bas)<br/>
          3. Saisissez ce code</p>
-      <p style="color:#666;font-size:13px;">Code valable environ 2 minutes. Pour un nouveau code, rechargez la page après ce délai.</p>`));
+      <p style="color:#666;font-size:13px;">Saisissez-le tout de suite (il expire vite).</p>
+      <p><a href="/pair?new=1" style="display:inline-block;padding:12px 20px;background:#16a34a;color:#fff;border-radius:8px;text-decoration:none;font-weight:bold;">🔄 Nouveau code</a></p>`));
   } catch (e) {
     console.error("[pair] échec:", e);
     res.status(500).send(page(`<h1>❌ Impossible d'obtenir le code</h1><p>${String(e.message || e)}</p>
