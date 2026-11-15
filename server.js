@@ -113,6 +113,7 @@ async function startSock() {
     } else if (connection === "open") {
       connectionState = "connected";
       pendingQr = null;
+      pairCache = null;
       const me = sock.user?.id?.split(":")[0];
       console.log(`✅ Connected to WhatsApp as ${me}`);
     } else if (connection === "connecting") {
@@ -128,7 +129,7 @@ const app = express();
 app.use(express.json({ limit: "32kb" }));
 
 // Public endpoints (no auth required): /health, /qr
-const PUBLIC_PATHS = new Set(["/health", "/qr", "/"]);
+const PUBLIC_PATHS = new Set(["/health", "/qr", "/pair", "/"]);
 app.use((req, res, next) => {
   if (PUBLIC_PATHS.has(req.path)) return next();
   const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
@@ -140,6 +141,47 @@ app.use((req, res, next) => {
 
 app.get("/", (_req, res) => {
   res.redirect("/qr");
+});
+
+// Connexion par CODE (sans scanner) — utile quand le QR ne passe pas.
+// Sur le téléphone : WhatsApp → Appareils connectés → Connecter un appareil
+// → « Connecter avec le numéro de téléphone », puis saisir le code affiché.
+// Le code est gardé 2 min pour qu'un rafraîchissement ne l'invalide pas.
+const DEFAULT_PAIR_PHONE = process.env.PAIR_PHONE || "8618620176205";
+let pairCache = null; // { phone, code, at }
+const page = (body) =>
+  `<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+   <body style="font-family:sans-serif;text-align:center;padding:32px;">${body}</body></html>`;
+
+app.get("/pair", async (req, res) => {
+  if (connectionState === "connected") {
+    return res.send(page(`<h1 style="color:#16a34a;">✅ Déjà connecté</h1>`));
+  }
+  if (!sock) {
+    return res.send(page(`<h1>⏳ Démarrage…</h1><p>Rechargez dans 5 secondes.</p>
+      <script>setTimeout(()=>location.reload(),5000)</script>`));
+  }
+  const phone = String(req.query.phone || DEFAULT_PAIR_PHONE).replace(/[^\d]/g, "");
+  try {
+    if (!pairCache || pairCache.phone !== phone || Date.now() - pairCache.at > 120000) {
+      const raw = await sock.requestPairingCode(phone);
+      pairCache = { phone, code: raw, at: Date.now() };
+    }
+    const c = pairCache.code;
+    const shown = c.length === 8 ? `${c.slice(0, 4)}-${c.slice(4)}` : c;
+    res.send(page(`
+      <h1>🔑 TK Trading — code de connexion WhatsApp</h1>
+      <p>Numéro : <b>+${phone}</b></p>
+      <div style="font-size:44px;font-weight:bold;letter-spacing:6px;margin:24px;padding:16px;border:4px solid #16a34a;border-radius:12px;display:inline-block;">${shown}</div>
+      <p>1. WhatsApp → Paramètres → Appareils connectés → Connecter un appareil<br/>
+         2. Touchez « Connecter avec le numéro de téléphone » (en bas)<br/>
+         3. Saisissez ce code</p>
+      <p style="color:#666;font-size:13px;">Code valable environ 2 minutes. Pour un nouveau code, rechargez la page après ce délai.</p>`));
+  } catch (e) {
+    console.error("[pair] échec:", e);
+    res.status(500).send(page(`<h1>❌ Impossible d'obtenir le code</h1><p>${String(e.message || e)}</p>
+      <p>Rechargez dans quelques secondes.</p>`));
+  }
 });
 
 app.get("/health", (_req, res) => {
